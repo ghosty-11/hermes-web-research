@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ghosty-11/hermes-web-research/schemas/research-result.schema.json",
+  "title": "Hermes Web Research Result",
+  "description": "JSON object the quarantined profile must return for web_research to forward anything.",
+  "type": "object",
+  "required": ["answer", "sources", "caveats"],
+  "additionalProperties": true,
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "Plain-text answer. An empty string is refused; whitespace is stripped before the check."
+    },
+    "sources": {
+      "type": "array",
+      "description": "Web sources cited for the answer. Only items whose url starts with http:// or https:// are forwarded.",
+      "items": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Source URL. Must begin with http:// or https:// and contain no whitespace."
+          },
+          "title": {
+            "type": "string",
+            "description": "Human-readable source title; forwarded only when non-empty."
+          }
+        }
+      }
+    },
+    "caveats": {
+      "type": "string",
+      "description": "Warnings or uncertainty notes about the answer. An empty string is omitted from the envelope."
+    }
+  }
+}
