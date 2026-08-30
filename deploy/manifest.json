@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "module": "hermes-web-research",
+  "artifacts": [
+    {"source": "plugin", "destination": "plugins/hermes-web-research", "kind": "tree"}
+  ]
+}
