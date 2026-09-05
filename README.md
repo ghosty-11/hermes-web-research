@@ -6,7 +6,7 @@
 
 ## Status
 
-Reference implementation of the hermes-web-research delegation plugin. The deterministic suite covers fail-closed handling of hostile and malformed child output, envelope-impersonation resistance, identity-based recursion blocking, source URL scheme restriction, length and stdout bounds, and correct child spawn environment. Integration with a live Hermes deployment, selection of the quarantine model, and content-truth review are acceptance work for each deployment.
+Reference implementation of the hermes-web-research delegation plugin. The deterministic suite covers fail-closed handling of hostile and malformed child output, envelope-impersonation resistance, identity-based recursion blocking, source URL scheme restriction, length and per-stream byte bounds, deadline handling, and correct child spawn environment. Integration with a live Hermes deployment, selection of the quarantine model, and content-truth review are acceptance work for each deployment.
 
 ## What it does
 
@@ -21,7 +21,7 @@ Configuration lives under a `web_research:` block. Recognised keys mirror the pl
 - `max_sources` — default `5`.
 - `max_url_chars` — default `300`.
 - `max_title_chars` — default `160`.
-- `max_stdout_bytes` — default `200000`.
+- `max_stdout_bytes` — default `200000`, enforced independently on raw stdout and stderr bytes.
 - `python` and `entrypoint` — default empty, derived from the running framework.
 - `workdir` — default empty, uses the system temp directory.
 
@@ -31,13 +31,13 @@ The plugin is a delegation boundary, not a content filter.
 
 Three verified properties:
 
-1. **Fail-closed.** If the child's stdout does not parse as a JSON object, nothing is forwarded — not a snippet, not a truncated fragment. The same holds for timeout, spawn failure, an empty answer, and a JSON array instead of an object. This was verified live against raw prose, truncated JSON, an HTML page, empty output, and fenced garbage.
+1. **Fail-closed.** If the child's stdout does not parse as a JSON object, output exceeds the per-stream byte limit, or the child times out, nothing is forwarded — not a snippet, not a truncated fragment. The same holds for spawn failure, an empty answer, and a JSON array instead of an object.
 2. **The envelope cannot be impersonated.** Forwarded values are flattened to one line (control characters become spaces) and the envelope's own markers — `UNTRUSTED WEB CONTENT`, `ANSWER:`, `CAVEATS:`, `SOURCES:`, `OPERATOR:` — are redacted out of them, so a value cannot wear the framing. Sources must be `http://` or `https://`.
 3. **Recursion is blocked by identity, not by an environment variable.** The seat is resolved from the Hermes home path via `get_active_profile_name()`. A guard keyed on `HERMES_PROFILE` could not fire because the gateway never sets it; this implementation returns false when the active seat is the quarantine, verified live on that seat.
 
 Honest limit: this bounds, structures, and labels attacker-influenced text; it does **not** sanitise it. A determined injection can still put chosen words in front of the privileged model — it just cannot put them there with a shell attached, at unbounded length, spread over lines it chose, or wearing the envelope's own vocabulary. Content-level screening is a separate layer.
 
-Measured facts: a real call took 16.9 s and 41.8 s on two runs against a free-tier model (the timeout is 300 s); the JSON scan's worst case over 200 KB of brace-laden text is 0.567 s.
+The implementation uses incremental per-stream byte bounds, a single bounded JSON decode, and a cooperative monotonic deadline with finite child cleanup. The deadline does not preempt CPU inside one parser call.
 
 ## Layout
 
@@ -61,7 +61,7 @@ Measured facts: a real call took 16.9 s and 41.8 s on two runs against a free-ti
 python3 -m unittest discover -s tests
 ```
 
-The deterministic suite currently contains 20 tests. It asserts that unparseable, truncated, HTML, empty, and fenced-garbage child output forwards nothing; that a JSON array is not treated as an object; that timeouts and spawn failures return only an error; that missing questions are refused without spawning; that forwarded text cannot add envelope lines or echo envelope markers; that control characters cannot add lines; that only `http://` and `https://` URLs are forwarded; that output is labelled untrusted and bounded; that absence of sources is stated; that the tool is unavailable without a configured quarantine, when the quarantine does not resolve, and when the current seat is the quarantine; that the child runs as the quarantine with parent identity scrubbed from its environment; that framework paths are derived, not hardcoded; and that the question is passed as a list argument without shell interpolation.
+The deterministic suite asserts the contracts described above, including byte boundaries, multibyte input, stderr accounting, timeout cleanup, and adversarial malformed JSON. Run `python3 -m unittest discover -s tests` to execute it.
 
 ## Support and security
 

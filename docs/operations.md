@@ -13,7 +13,7 @@ All settings live under the `web_research:` block in the Hermes profile config.
 | `max_sources` | `5` | Maximum source entries forwarded. |
 | `max_url_chars` | `300` | Maximum characters per source URL. |
 | `max_title_chars` | `160` | Maximum characters per source title. |
-| `max_stdout_bytes` | `200000` | Maximum child stdout bytes scanned for JSON. |
+| `max_stdout_bytes` | `200000` | Maximum bytes read from each child output stream. Reads stop and the child is killed when either stream exceeds the limit. |
 | `python` | `""` | Python interpreter to spawn. Empty means `sys.executable` of the running process. |
 | `entrypoint` | `""` | Hermes CLI entrypoint path. Empty means derive from the installed `hermes_cli` package. |
 | `workdir` | `""` | Working directory for the child process. Empty means the system temp directory. |
@@ -23,7 +23,7 @@ All settings live under the `web_research:` block in the Hermes profile config.
 - `timeout_seconds` is the longest you are willing to block a privileged turn. A real call against a free-tier model has taken roughly 17 s and 42 s on observed runs; set this to the point where waiting costs more than the answer.
 - `max_answer_chars` bounds the amount of attacker-influenced text that can reach the privileged model. Raising it widens exactly the channel the boundary exists to narrow.
 - `max_sources` bounds how many URLs can be injected into the context. Raising it widens the same channel.
-- `max_stdout_bytes` protects the parent from a runaway child. It must be large enough to hold the JSON object and small enough to keep memory bounded. A scan of 200 KB of brace-laden text has taken under one second in testing.
+- `max_stdout_bytes` is enforced incrementally on raw bytes for both stdout and stderr. Exact-boundary output is accepted; the first byte beyond the limit refuses the call. A zero limit allows no child output. The child is killed and reaped on overflow or timeout, so no truncated JSON is treated as success.
 - `python` and `entrypoint` override the derived framework paths. Use them only when the running interpreter or the Hermes CLI is not where the quarantine should run.
 - `workdir` changes the child's filesystem context. It has no effect on what the quarantine can reach, because the boundary is the tool schema, not the directory.
 

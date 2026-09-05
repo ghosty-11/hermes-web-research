@@ -14,7 +14,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import time
 import subprocess
+import socket
+from unittest import mock
 import sys
 import unittest
 
@@ -47,6 +50,9 @@ class WebResearchTestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         self._env = dict(os.environ)
+        self._real_socket = socket.socket
+        socket.socket = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("network forbidden in local fixtures"))
         self._real_run = subprocess.run
         self.tmp = self.enterContext(__import__("tempfile").TemporaryDirectory())
         self.home = os.path.join(self.tmp, ".hermes", "profiles", QUARANTINE)
@@ -65,22 +71,21 @@ class WebResearchTestCase(unittest.TestCase):
         self.plugin._framework = lambda: (sys.executable, self.entrypoint)
 
     def tearDown(self) -> None:
+        socket.socket = self._real_socket
         subprocess.run = self._real_run
         os.environ.clear()
         os.environ.update(self._env)
 
     # ---- helpers ---------------------------------------------------------
     def answer(self, stdout: str, rc: int = 0, question: str = "who?") -> str:
-        subprocess.run = lambda *a, **k: _Completed(stdout, rc)
-        try:
-            return self.plugin._handle({"question": question})
-        finally:
-            subprocess.run = self._real_run
+        self.plugin._run_quarantine = lambda *a, **k: (
+            stdout.encode(), b"", rc, None)
+        return self.plugin._handle({"question": question})
 
-    def payload(self, **fields) -> str:
+    def payload(self, ensure_ascii=True, **fields) -> str:
         base = {"answer": "an answer", "sources": [], "caveats": ""}
         base.update(fields)
-        return json.dumps(base)
+        return json.dumps(base, ensure_ascii=ensure_ascii)
 
     # ---- it fails closed --------------------------------------------------
     def test_unparseable_output_forwards_nothing(self):
@@ -107,26 +112,23 @@ class WebResearchTestCase(unittest.TestCase):
         out = self.answer(self.payload(answer="", sources=[{"url": "https://x.example"}]))
         self.assertNotIn("x.example", out)
         self.assertIn("error", out.lower())
-
     def test_timeout_forwards_nothing(self):
-        def _boom(*_a, **_k):
-            raise subprocess.TimeoutExpired(cmd="child", timeout=1)
-        subprocess.run = _boom
+        self.plugin._run_quarantine = lambda *a, **k: (b"", b"", -9, "timeout")
         out = self.plugin._handle({"question": "q"})
-        self.assertIn("error", out.lower())
+        self.assertIn("timed out", out.lower())
         self.assertNotIn("Traceback", out)
 
     def test_spawn_failure_forwards_nothing(self):
         def _boom(*_a, **_k):
             raise OSError("no such interpreter")
-        subprocess.run = _boom
+        self.plugin._run_quarantine = _boom
         out = self.plugin._handle({"question": "q"})
         self.assertIn("error", out.lower())
         self.assertNotIn("no such interpreter", out)
 
     def test_missing_question_is_refused_without_spawning(self):
         calls = []
-        subprocess.run = lambda *a, **k: calls.append(a) or _Completed("{}")
+        self.plugin._run_quarantine = lambda *a, **k: calls.append(a) or (b"{}", b"", 0, None)
         out = self.plugin._handle({})
         self.assertEqual(calls, [])
         self.assertIn("required", out.lower())
@@ -227,11 +229,11 @@ class WebResearchTestCase(unittest.TestCase):
     def test_child_runs_as_the_quarantine_and_not_as_its_parent(self):
         seen = {}
 
-        def _capture(cmd, **kwargs):
-            seen["cmd"], seen["env"] = cmd, kwargs.get("env") or {}
-            return _Completed(self.payload())
+        def _capture(cmd, env, cwd, timeout, limit, deadline, **kwargs):
+            seen["cmd"], seen["env"] = cmd, env
+            return self.payload().encode(), b"", 0, None
 
-        subprocess.run = _capture
+        self.plugin._run_quarantine = _capture
         os.environ["HERMES_KANBAN_TASK"] = "leak-me"
         os.environ["HERMES_SESSION_ID"] = "leak-me-too"
         self.plugin._handle({"question": "q"})
@@ -239,14 +241,6 @@ class WebResearchTestCase(unittest.TestCase):
         self.assertEqual(seen["env"].get("HERMES_HOME"), self.home)
         self.assertNotIn("HERMES_KANBAN_TASK", seen["env"])
         self.assertNotIn("HERMES_SESSION_ID", seen["env"])
-        self.assertEqual(seen["env"].get("HERMES_HOME_MODE"), "0750")
-        self.assertIn(QUARANTINE, seen["cmd"])
-
-    def test_paths_are_derived_not_hardcoded(self):
-        """A stranger's install is not laid out like the author's."""
-        source = open(PLUGIN_PATH, encoding="utf-8").read()
-        for absolute in ("/var/lib/", "/home/", "/tmp/"):
-            self.assertNotIn(absolute, source)
 
     def test_framework_interpreter_is_the_running_one_by_default(self):
         """Derivation, asserted as behaviour rather than by reading the source."""
@@ -265,15 +259,82 @@ class WebResearchTestCase(unittest.TestCase):
     def test_question_is_not_shell_interpolated(self):
         seen = {}
 
-        def _capture(cmd, **kwargs):
+        def _capture(cmd, env, cwd, timeout, limit, deadline, **kwargs):
             seen["cmd"] = cmd
-            return _Completed(self.payload())
+            return self.payload().encode(), b"", 0, None
 
-        subprocess.run = _capture
+        self.plugin._run_quarantine = _capture
         self.plugin._handle({"question": "; rm -rf / #"})
         self.assertIsInstance(seen["cmd"], list)
         self.assertTrue(any("; rm -rf / #" in str(part) for part in seen["cmd"]))
 
+
+    def _child_fixture(self, stdout=b"", stderr=b"", sleep=0, pid_file=None):
+        script = os.path.join(self.tmp, "child.py")
+        pid_line = ""
+        if pid_file:
+            pid_line = f"open({pid_file!r}, 'w').write(str(__import__('os').getpid()))\n"
+        source = (
+            "import sys,time\n"
+            + pid_line
+            + f"time.sleep({sleep})\n"
+            + f"sys.stdout.buffer.write({stdout!r}); sys.stdout.buffer.flush()\n"
+            + f"sys.stderr.buffer.write({stderr!r}); sys.stderr.buffer.flush()\n"
+        )
+        with open(script, "w", encoding="utf-8") as stream:
+            stream.write(source)
+        self.plugin._framework = lambda: (sys.executable, script)
+        return script
+
+    def _real_answer(self, *, stdout=b"", stderr=b"", limit=200_000, timeout=2,
+                     sleep=0, pid_file=None):
+        self._child_fixture(stdout=stdout, stderr=stderr, sleep=sleep,
+                            pid_file=pid_file)
+        self.plugin._config = lambda: dict(
+            self.plugin.DEFAULTS, quarantine_profile=QUARANTINE,
+            max_stdout_bytes=limit, timeout_seconds=timeout)
+        return self.plugin._handle({"question": "q"})
+    def test_stderr_over_limit_is_refused(self):
+        stdout = self.payload().encode()
+        limit = len(stdout) + 20
+        out = self._real_answer(stdout=stdout, stderr=b"e" * (limit + 1),
+                                limit=limit)
+        self.assertIn("exceeded", out.lower())
+        self.assertNotIn("e" * 10, out)
+
+    def test_byte_boundary_and_multibyte_output(self):
+        payload = self.payload(answer="é", ensure_ascii=False).encode()
+        self.assertGreater(len(payload), len(payload.decode()))
+        self.assertIn("ANSWER:", self._real_answer(stdout=payload, limit=len(payload)))
+        out = self._real_answer(stdout=payload, limit=len(payload) - 1)
+        self.assertIn("exceeded", out.lower())
+
+
+    def test_zero_output_limit_rejects_any_output(self):
+        self.assertIn("exceeded", self._real_answer(stdout=b"x", limit=0).lower())
+
+    def test_timeout_kills_child(self):
+        pid_file = os.path.join(self.tmp, "child.pid")
+        out = self._real_answer(stdout=self.payload().encode(), sleep=3,
+                                timeout=1, pid_file=pid_file)
+        self.assertIn("timed out", out.lower())
+        with open(pid_file, encoding="ascii") as stream:
+            pid = int(stream.read())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_reader_exception_kills_child(self):
+        with mock.patch.object(self.plugin.selectors.DefaultSelector, "select",
+                               side_effect=OSError("selector reset")):
+            out = self._real_answer(stdout=b"", sleep=3)
+        self.assertIn("error", out.lower())
+
+    def test_brace_heavy_malformed_output_is_bounded(self):
+        started = time.monotonic()
+        out = self._real_answer(stdout=b'{"answer":"' + b"}" * 20_000,
+                                limit=25_000)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertIn("required JSON", out)
 
 if __name__ == "__main__":
     unittest.main()

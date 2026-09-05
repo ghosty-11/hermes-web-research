@@ -48,9 +48,12 @@ import json
 import logging
 import os
 import re
+import selectors
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -208,29 +211,86 @@ def _child_env(home: str, name: str) -> dict:
     env["HERMES_HOME_MODE"] = env.get("HERMES_HOME_MODE", "0750")
     return env
 
-
 def _extract_json(text: str) -> dict | None:
-    """Pull the first JSON object out of the child's stdout.
-
-    Deliberately narrow: a model that wrapped its JSON in a fence or a sentence
-    is a formatting miss, not an attack, and re-running costs a full agent turn.
-    Anything that does not parse as an object returns None and forwards nothing.
-    """
+    """Extract one object with a single bounded JSON decode attempt."""
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-z]*\s*|\s*```$", "", text, flags=re.S)
     start = text.find("{")
     if start < 0:
         return None
-    for end in range(len(text), start, -1):  # longest valid object wins
-        if text[end - 1] != "}":
-            continue
+    try:
+        parsed, _end = json.JSONDecoder().raw_decode(text, start)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+def _terminate_child(proc: subprocess.Popen) -> None:
+    """Terminate the process group and reap the child within a finite grace."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
         try:
-            parsed = json.loads(text[start:end])
-        except ValueError:
-            continue
-        return parsed if isinstance(parsed, dict) else None
-    return None
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("quarantine child could not be reaped") from exc
+    except Exception:
+        logger.debug("web_research: child reap failed", exc_info=True)
+def _run_quarantine(command: list[str], env: dict, cwd: str,
+                    timeout: float, limit: int,
+                    deadline: float | None = None) -> tuple[bytes, bytes, int, str | None]:
+    """Read both child pipes incrementally under one byte and wall-clock bound."""
+    limit = max(0, limit)
+    proc = subprocess.Popen(
+        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cwd=cwd, start_new_session=True)
+    selector = selectors.DefaultSelector()
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    open_streams = {}
+    for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+        assert stream is not None
+        selector.register(stream, selectors.EVENT_READ, name)
+        open_streams[name] = stream
+    deadline = deadline if deadline is not None else time.monotonic() + max(0.0, timeout)
+    reason = None
+    try:
+        while open_streams:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                reason = "timeout"
+                break
+            for key, _ in selector.select(remaining):
+                chunk = os.read(key.fileobj.fileno(), 65536)
+                name = key.data
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    open_streams.pop(name, None)
+                    continue
+                if len(buffers[name]) + len(chunk) > limit:
+                    reason = "output_limit"
+                    break
+                buffers[name].extend(chunk)
+            if reason:
+                break
+        if reason is None:
+            remaining = deadline - time.monotonic()
+            try:
+                proc.wait(timeout=max(0.0, remaining))
+            except subprocess.TimeoutExpired:
+                reason = "timeout"
+    finally:
+        selector.close()
+        if reason or proc.poll() is None:
+            _terminate_child(proc)
+        else:
+            proc.wait()
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
+    return bytes(buffers["stdout"]), bytes(buffers["stderr"]), proc.returncode, reason
 
 
 def _neutralise(value: Any, limit: int) -> str:
@@ -275,40 +335,58 @@ def _handle(args: dict, **_kwargs) -> str:
             "quarantine. Nothing was fetched."
         )
 
-    timeout = int(config.get("timeout_seconds") or DEFAULTS["timeout_seconds"])
+    timeout = float(config.get("timeout_seconds") or DEFAULTS["timeout_seconds"])
+    limit = int(config.get("max_stdout_bytes") or 0)
     workdir = str(config.get("workdir") or "") or tempfile.gettempdir()
     command = [python, entrypoint, "-p", name, "-z", _PROMPT.format(question=question)]
+    deadline = time.monotonic() + max(0.0, timeout)
     try:
-        proc = subprocess.run(
-            command,
-            env=_child_env(home, name),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=workdir,
-        )
-    except subprocess.TimeoutExpired:
-        return (
-            f"web_research error: the quarantine timed out after {timeout}s. "
-            "Nothing was forwarded."
-        )
+        stdout_bytes, _stderr_bytes, returncode, reason = _run_quarantine(
+            command, _child_env(home, name), workdir, timeout, limit, deadline)
     except Exception as exc:
         logger.exception("web_research: spawn failed")
         return (
             f"web_research error: could not run the quarantine "
             f"({type(exc).__name__}). Nothing was forwarded."
         )
-
-    stdout = (proc.stdout or "")[: int(config.get("max_stdout_bytes") or 0) or None]
+    if reason == "timeout":
+        return (
+            f"web_research error: the quarantine timed out after {timeout:g}s. "
+            "Nothing was forwarded."
+        )
+    if reason == "output_limit":
+        return (
+            f"web_research error: the quarantine exceeded the "
+            f"max_stdout_bytes limit ({limit} bytes). Nothing was forwarded."
+        )
+    if time.monotonic() > deadline:
+        return (
+            f"web_research error: the quarantine timed out after {timeout:g}s. "
+            "Nothing was forwarded."
+        )
+    try:
+        stdout = stdout_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        stdout = ""
+    if time.monotonic() > deadline:
+        return (
+            f"web_research error: the quarantine timed out after {timeout:g}s. "
+            "Nothing was forwarded."
+        )
     payload = _extract_json(stdout)
+    if time.monotonic() > deadline:
+        return (
+            f"web_research error: the quarantine timed out after {timeout:g}s. "
+            "Nothing was forwarded."
+        )
     if payload is None:
         logger.warning(
-            "web_research: unparseable quarantine output (%d chars, rc=%s) — not forwarding",
-            len(stdout), proc.returncode,
+            "web_research: unparseable quarantine output (%d bytes, rc=%s) — not forwarding",
+            len(stdout_bytes), returncode,
         )
         return (
             "web_research error: the quarantine did not return the required JSON "
-            f"(rc={proc.returncode}, {len(stdout)} chars). Nothing was forwarded, "
+            f"(rc={returncode}, {len(stdout_bytes)} bytes). Nothing was forwarded, "
             "because unparsed output is raw web text and this boundary fails closed. "
             "Retry with a narrower question, or check the quarantine profile's logs."
         )
@@ -351,7 +429,13 @@ def _handle(args: dict, **_kwargs) -> str:
         ]
     else:
         lines.append("SOURCES: none returned — treat the answer as unverified.")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    if time.monotonic() > deadline:
+        return (
+            f"web_research error: the quarantine timed out after {timeout:g}s. "
+            "Nothing was forwarded."
+        )
+    return result
 
 
 _SCHEMA = {
