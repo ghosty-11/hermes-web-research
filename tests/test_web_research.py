@@ -329,10 +329,52 @@ class WebResearchTestCase(unittest.TestCase):
             out = self._real_answer(stdout=b"", sleep=3)
         self.assertIn("error", out.lower())
 
+    def test_selector_registration_failure_reaps_child(self):
+        children = []
+        real_popen = self.plugin.subprocess.Popen
+
+        def record_child(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        try:
+            with mock.patch.object(self.plugin.subprocess, "Popen", side_effect=record_child):
+                with mock.patch.object(self.plugin.selectors.DefaultSelector, "register",
+                                       side_effect=OSError("registration failed")):
+                    out = self._real_answer(sleep=30)
+            self.assertIn("error", out.lower())
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0].poll(), "failed setup left the child running")
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=2)
+                for stream in (child.stdout, child.stderr):
+                    if stream is not None:
+                        stream.close()
+
+    def test_parse_that_exhausts_deadline_forwards_nothing(self):
+        parse = self.plugin._extract_json
+
+        def slow_parse(text):
+            result = parse(text)
+            time.sleep(0.03)
+            return result
+
+        self.plugin._config = lambda: dict(
+            self.plugin.DEFAULTS, quarantine_profile=QUARANTINE,
+            timeout_seconds=0.01)
+        with mock.patch.object(self.plugin, "_extract_json", side_effect=slow_parse):
+            out = self.answer(self.payload(answer="private result"))
+        self.assertIn("timed out", out.lower())
+        self.assertNotIn("private result", out)
+
     def test_brace_heavy_malformed_output_is_bounded(self):
         started = time.monotonic()
-        out = self._real_answer(stdout=b'{"answer":"' + b"}" * 20_000,
-                                limit=25_000)
+        out = self._real_answer(stdout=b'{"answer":"' + b"}" * 100_000,
+                                limit=110_000, timeout=10)
         self.assertLess(time.monotonic() - started, 1.0)
         self.assertIn("required JSON", out)
 

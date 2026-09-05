@@ -237,26 +237,26 @@ def _terminate_child(proc: subprocess.Popen) -> None:
         proc.wait(timeout=1.0)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("quarantine child could not be reaped") from exc
-    except Exception:
-        logger.debug("web_research: child reap failed", exc_info=True)
 def _run_quarantine(command: list[str], env: dict, cwd: str,
                     timeout: float, limit: int,
                     deadline: float | None = None) -> tuple[bytes, bytes, int, str | None]:
-    """Read both child pipes incrementally under one byte and wall-clock bound."""
+    """Bound both child pipes and clean up every post-spawn failure."""
     limit = max(0, limit)
+    deadline = deadline if deadline is not None else time.monotonic() + max(0.0, timeout)
     proc = subprocess.Popen(
         command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         cwd=cwd, start_new_session=True)
-    selector = selectors.DefaultSelector()
-    buffers = {"stdout": bytearray(), "stderr": bytearray()}
-    open_streams = {}
-    for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr)):
-        assert stream is not None
-        selector.register(stream, selectors.EVENT_READ, name)
-        open_streams[name] = stream
-    deadline = deadline if deadline is not None else time.monotonic() + max(0.0, timeout)
+    selector = None
+    completed = False
     reason = None
     try:
+        selector = selectors.DefaultSelector()
+        buffers = {"stdout": bytearray(), "stderr": bytearray()}
+        open_streams = {}
+        for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+            assert stream is not None
+            selector.register(stream, selectors.EVENT_READ, name)
+            open_streams[name] = stream
         while open_streams:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -276,20 +276,23 @@ def _run_quarantine(command: list[str], env: dict, cwd: str,
             if reason:
                 break
         if reason is None:
-            remaining = deadline - time.monotonic()
             try:
-                proc.wait(timeout=max(0.0, remaining))
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 reason = "timeout"
+        completed = reason is None
     finally:
-        selector.close()
-        if reason or proc.poll() is None:
-            _terminate_child(proc)
-        else:
-            proc.wait()
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
-                stream.close()
+        try:
+            if not completed:
+                _terminate_child(proc)
+        finally:
+            try:
+                if selector is not None:
+                    selector.close()
+            finally:
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
     return bytes(buffers["stdout"]), bytes(buffers["stderr"]), proc.returncode, reason
 
 
