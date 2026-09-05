@@ -39,8 +39,8 @@ A web page, search result, or extracted document that wants its content to reach
   - What it cannot do: it cannot verify that a URL is safe to visit, that the page is truthful, or that the title matches the destination.
 - **Identity-based recursion block.** The tool is unavailable when the active seat is the configured quarantine. Profile identity is resolved from the Hermes home path via `get_active_profile_name()`, not from the `HERMES_PROFILE` environment variable.
   - What it cannot do: it cannot prevent the operator from pointing a different tool or plugin at the same quarantine seat, nor can it enforce what tools the quarantine profile actually exposes.
-- **Resource bounds.** Timeouts, stdout limits, and per-field length caps prevent unbounded consumption and slow exfiltration.
-  - What it cannot do: they cannot prevent the privileged model from including sensitive data in the question text, because the question crosses the boundary intentionally.
+- **Resource bounds.** The plugin reads stdout and stderr incrementally as raw bytes and enforces `max_stdout_bytes` per stream. A cooperative monotonic deadline covers child receive and the bounded cleanup grace; parsing and formatting each check the same deadline, and parsing is one decode over at most the byte cap. Overflow or timeout kills and reaps the child; refusals never forward truncated JSON. This bounds normal and adversarial work but does not preempt CPU already spent inside a single parser call.
+  - What it cannot do: it cannot prevent the privileged model from including sensitive data in the question text, because the question crosses the boundary intentionally.
 - **Spawn isolation and environment scrubbing.** The child runs under the quarantine home directory; parent session and task identifiers are removed from its environment.
   - What it cannot do: it cannot prevent the quarantine profile from being over-provisioned at the seat level. If the quarantine holds filesystem, shell, messaging, or code-execution tools, the isolation boundary does not remove them.
 

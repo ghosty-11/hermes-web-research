@@ -34,7 +34,7 @@ Review the `web_research:` config block before enabling the plugin in a shared o
 - `max_answer_chars`, `max_caveat_chars`, `max_title_chars`: per-field length ceilings.
 - `max_sources`: maximum sources forwarded.
 - `max_url_chars`: maximum length of a forwarded URL.
-- `max_stdout_bytes`: maximum child stdout the parent will read.
+- `max_stdout_bytes`: maximum bytes the parent reads independently from child stdout and stderr; overflow refuses the call and kills the child.
 - `python` and `entrypoint`: interpreter and Hermes entrypoint used to spawn the quarantine. Empty defaults derive from the running framework.
 - `workdir`: working directory for the child process. Empty defaults to the system temp directory.
 

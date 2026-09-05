@@ -53,9 +53,12 @@ Caps are configurable under `web_research:`; defaults are listed in [`docs/opera
 | `sources` | `max_sources` items | 0 |
 | `sources[].url` | `max_url_chars` | 0 |
 | `sources[].title` | `max_title_chars` | 0 |
-| total child stdout read | `max_stdout_bytes` bytes | 0 |
+| total child output read | `max_stdout_bytes` bytes per stream | 0 |
 
-The total stdout scan is also bounded by `max_stdout_bytes`; anything past it is discarded before parsing.
+The child stdout and stderr pipes are read incrementally. The limit is measured in
+bytes before decoding, independently for each stream. A stream that reaches the limit
+exactly is accepted; the first byte beyond the limit refuses the call and terminates
+the child. A zero limit permits no output bytes. Refusals never forward partial output.
 
 ## Output envelope
 
@@ -102,7 +105,8 @@ A refusal is a string returned directly to the caller. **A refusal forwards noth
 | Framework entrypoint or interpreter cannot be located | `web_research error: could not locate the Hermes entrypoint to run the quarantine. Nothing was fetched.` |
 | Child process times out | `web_research error: the quarantine timed out after <timeout>s. Nothing was forwarded.` |
 | Child process cannot be spawned | `web_research error: could not run the quarantine (<exception>). Nothing was forwarded.` |
-| Child stdout does not parse as one JSON object | `web_research error: the quarantine did not return the required JSON (rc=<returncode>, <length> chars). Nothing was forwarded, because unparsed output is raw web text and this boundary fails closed. Retry with a narrower question, or check the quarantine profile's logs.` |
+| Child output exceeds `max_stdout_bytes` on stdout or stderr | `web_research error: the quarantine exceeded the max_stdout_bytes limit (<n> bytes). Nothing was forwarded.` |
+| Child stdout does not parse as one JSON object | `web_research error: the quarantine did not return the required JSON (rc=<returncode>, <length> bytes). Nothing was forwarded, because unparsed output is raw web text and this boundary fails closed. Retry with a narrower question, or check the quarantine profile's logs.` |
 | Parsed answer is empty after neutralisation | `web_research error: the quarantine returned an empty answer. Nothing was forwarded.` |
 
 These are the only ways the tool returns. No partial content, snippet, or truncated fragment is forwarded in any refusal case.
