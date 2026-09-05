@@ -40,9 +40,6 @@ def load_plugin():
     return module
 
 
-class _Completed:
-    def __init__(self, stdout: str, rc: int = 0) -> None:
-        self.stdout, self.stderr, self.returncode = stdout, "", rc
 
 
 class WebResearchTestCase(unittest.TestCase):
@@ -53,7 +50,6 @@ class WebResearchTestCase(unittest.TestCase):
         self._real_socket = socket.socket
         socket.socket = lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("network forbidden in local fixtures"))
-        self._real_run = subprocess.run
         self.tmp = self.enterContext(__import__("tempfile").TemporaryDirectory())
         self.home = os.path.join(self.tmp, ".hermes", "profiles", QUARANTINE)
         os.makedirs(self.home)
@@ -72,7 +68,6 @@ class WebResearchTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         socket.socket = self._real_socket
-        subprocess.run = self._real_run
         os.environ.clear()
         os.environ.update(self._env)
 
@@ -323,37 +318,36 @@ class WebResearchTestCase(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
-    def test_reader_exception_kills_child(self):
-        with mock.patch.object(self.plugin.selectors.DefaultSelector, "select",
-                               side_effect=OSError("selector reset")):
-            out = self._real_answer(stdout=b"", sleep=3)
-        self.assertIn("error", out.lower())
 
-    def test_selector_registration_failure_reaps_child(self):
-        children = []
-        real_popen = self.plugin.subprocess.Popen
+    def test_selector_failures_reap_child(self):
+        for failed_method in ("register", "select"):
+            with self.subTest(failed_method=failed_method):
+                children = []
+                real_popen = self.plugin.subprocess.Popen
 
-        def record_child(*args, **kwargs):
-            child = real_popen(*args, **kwargs)
-            children.append(child)
-            return child
+                def record_child(*args, **kwargs):
+                    child = real_popen(*args, **kwargs)
+                    children.append(child)
+                    return child
 
-        try:
-            with mock.patch.object(self.plugin.subprocess, "Popen", side_effect=record_child):
-                with mock.patch.object(self.plugin.selectors.DefaultSelector, "register",
-                                       side_effect=OSError("registration failed")):
-                    out = self._real_answer(sleep=30)
-            self.assertIn("error", out.lower())
-            self.assertEqual(len(children), 1)
-            self.assertIsNotNone(children[0].poll(), "failed setup left the child running")
-        finally:
-            for child in children:
-                if child.poll() is None:
-                    child.kill()
-                child.wait(timeout=2)
-                for stream in (child.stdout, child.stderr):
-                    if stream is not None:
-                        stream.close()
+                try:
+                    started = time.monotonic()
+                    with mock.patch.object(self.plugin.subprocess, "Popen", side_effect=record_child):
+                        with mock.patch.object(self.plugin.selectors.DefaultSelector, failed_method,
+                                               side_effect=OSError("selector failed")):
+                            out = self._real_answer(sleep=3)
+                    self.assertLess(time.monotonic() - started, 1.0)
+                    self.assertIn("error", out.lower())
+                    self.assertEqual(len(children), 1)
+                    self.assertIsNotNone(children[0].poll(), "failure left the child running")
+                finally:
+                    for child in children:
+                        if child.poll() is None:
+                            child.kill()
+                        child.wait(timeout=2)
+                        for stream in (child.stdout, child.stderr):
+                            if stream is not None:
+                                stream.close()
 
     def test_parse_that_exhausts_deadline_forwards_nothing(self):
         parse = self.plugin._extract_json
