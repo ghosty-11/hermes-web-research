@@ -25,7 +25,7 @@ Only the current default branch is maintained. Deployment policy, quarantine pro
 
 ## Operational security
 
-The quarantine profile's own tool surface is the blast radius. Verifying it at the schema level is mandatory; do not assume safety from config text alone. The quarantine seat should expose only web search and web extraction tools. If it also holds filesystem, shell, messaging, code execution, or board-access tools, a successful injection wins those tools, because the plugin cannot shrink the quarantine's own capabilities.
+The quarantine profile's model-exposed tool surface is part of the blast radius, not an operating-system boundary. The child runs as the same operating-system identity as the parent in a separate process and inherits the parent's environment minus session and kanban identifiers (and available gateway-specific context variables); its home and profile variables are set for the quarantine. It can retain credentials and filesystem access allowed to that identity. Verifying the web-only tool schema on the actual seat is mandatory; do not assume safety from config text alone. If the seat also holds filesystem, shell, messaging, code execution, or board-access tools, a successful injection gains those model-exposed tools too.
 
 Review the `web_research:` config block before enabling the plugin in a shared or long-running deployment:
 

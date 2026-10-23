@@ -8,7 +8,7 @@ The plugin registers one tool:
 |---|---|---|---|
 | `web_research` | `question` | string | The research question, self-contained. The quarantine has no conversation context, so any needed context must be in the question. |
 
-`question` is required. The tool description tells the model that this profile has no web tools of its own by design, and that the call costs one agent turn in the other profile.
+`question` is required. The tool description tells the model that this profile has no web tools of its own by design, that the call costs one agent turn in the other profile, and that the child runs in a separate process as the same operating-system identity, inheriting the parent environment except session and kanban identifiers (and available gateway-specific context variables), with the home and profile variables set for the quarantine. A configured web-only tool schema is not operating-system isolation.
 
 ## Quarantine return object
 
@@ -106,6 +106,7 @@ A refusal is a string returned directly to the caller. **A refusal forwards noth
 | Child process times out | `web_research error: the quarantine timed out after <timeout>s. Nothing was forwarded.` |
 | Child process cannot be spawned | `web_research error: could not run the quarantine (<exception>). Nothing was forwarded.` |
 | Child output exceeds `max_stdout_bytes` on stdout or stderr | `web_research error: the quarantine exceeded the max_stdout_bytes limit (<n> bytes). Nothing was forwarded.` |
+| Child exits nonzero | `web_research error: the quarantine exited with code <returncode>. Nothing was forwarded.` |
 | Child stdout does not parse as one JSON object | `web_research error: the quarantine did not return the required JSON (rc=<returncode>, <length> bytes). Nothing was forwarded, because unparsed output is raw web text and this boundary fails closed. Retry with a narrower question, or check the quarantine profile's logs.` |
 | Parsed answer is empty after neutralisation | `web_research error: the quarantine returned an empty answer. Nothing was forwarded.` |
 

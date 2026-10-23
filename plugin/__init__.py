@@ -8,28 +8,30 @@ sensitive systems and external state change on a single surface — all three
 properties of the Rule of Two, on the profile that talks to people. Removing the
 web tools closes it, but removing a capability the operator wants is not a fix.
 
-So the capability moves instead of disappearing. A quarantine profile whose
-entire tool schema is web search and extraction does the fetching, in a separate
-OS process, and this plugin registers one tool on the privileged profile that
-delegates to it.
+So the capability moves instead of disappearing. A quarantine profile with a
+web-only tool schema does the fetching in a separate process, and this plugin
+registers one tool on the privileged profile that delegates to it. The child
+runs as the same operating-system identity, without operating-system isolation.
 
 WHY THAT IS SAFER THAN FETCHING DIRECTLY
-1. The quarantine has nothing worth hijacking. An injection that fully owns its
-   turn gets web search and extraction, on a profile with no filesystem, no
-   shell, no messaging and no task board.
+1. The quarantine's web-only tool schema limits the tools exposed to its model.
+   An injection that owns its turn does not gain shell, filesystem, messaging
+   or task-board tools through that schema. The child retains the parent's
+   operating-system permissions and most of its environment.
 2. The handoff is TYPED. The quarantine is asked for one JSON object; this plugin
    parses it and forwards only known fields, each length-bounded.
-3. It FAILS CLOSED. If the output does not parse, nothing is forwarded — not a
-   snippet, not a truncated fragment. Unparsed output is raw web text, and the
-   moment you forward "just the beginning of it" the boundary is decorative.
+3. It FAILS CLOSED. If the child exits nonzero or its output does not parse,
+   nothing is forwarded — not a snippet, not a truncated fragment. Unparsed
+   output is raw web text, and forwarding "just the beginning" would make the
+   boundary decorative.
 
 WHAT THIS DOES NOT DO — SAY IT PLAINLY
 The `answer` and `sources` values are still influenced by whatever the
 quarantine read. This bounds, structures and labels that text; it does not
 sanitise it. A determined injection can still put chosen words in front of the
-privileged model — it just cannot put them there with a shell attached, at
-unbounded length, spread over lines it chose, or wearing the envelope's own
-vocabulary. Content-level screening is a different layer.
+privileged model. The handoff limits their length and framing, but neither the
+handoff nor the web-only tool schema removes the child's operating-system
+access. Content-level screening is a different layer.
 
 The envelope's markers are redacted from forwarded values for that last reason:
 a value that can spell the framing can impersonate it. Structure is the only
@@ -194,7 +196,7 @@ def _available() -> bool:
 
 def _child_env(home: str, name: str) -> dict:
     env = dict(os.environ)
-    # Scrub inherited identity so the child cannot act as its parent.
+    # Remove session and kanban identifiers; other variables may remain inherited.
     for key in list(env):
         if key.startswith("HERMES_KANBAN") or key.startswith("HERMES_SESSION"):
             env.pop(key, None)
@@ -362,6 +364,11 @@ def _handle(args: dict, **_kwargs) -> str:
             f"web_research error: the quarantine exceeded the "
             f"max_stdout_bytes limit ({limit} bytes). Nothing was forwarded."
         )
+    if returncode != 0:
+        return (
+            f"web_research error: the quarantine exited with code {returncode}. "
+            "Nothing was forwarded."
+        )
     if time.monotonic() > deadline:
         return (
             f"web_research error: the quarantine timed out after {timeout:g}s. "
@@ -444,11 +451,15 @@ def _handle(args: dict, **_kwargs) -> str:
 _SCHEMA = {
     "name": "web_research",
     "description": (
-        "Research a question on the web. Runs in a quarantined profile that holds no "
-        "filesystem, shell or messaging access, and returns a bounded, source-cited "
-        "summary labelled as untrusted. Use this instead of asking for a URL to be "
-        "fetched: this profile has no web tools of its own, by design. Costs one "
-        "agent turn in the other profile, so expect it to take up to a few minutes."
+        "Research a question on the web. Runs in a separate process as the same "
+        "operating-system identity, with the parent environment minus session and "
+        "kanban identifiers (and available gateway context variables); its home "
+        "and profile variables are set for the quarantine. The configured web-only "
+        "tool schema is not operating-system isolation. Returns a bounded, "
+        "source-cited summary labelled as untrusted. Use this instead of asking "
+        "for a URL to be fetched: this profile has no web tools of its own, by "
+        "design. Costs one agent turn in the other profile, so expect it to take "
+        "up to a few minutes."
     ),
     "parameters": {
         "type": "object",

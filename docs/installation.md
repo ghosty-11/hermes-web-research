@@ -4,7 +4,7 @@
 
 - Python 3.11 or newer on a POSIX host.
 - A Hermes Agent deployment with standalone plugin support.
-- A quarantine profile that has web search and extraction tools and nothing else worth hijacking: no shell, no filesystem write tools, no messaging, no task board.
+- A quarantine profile configured with a web-only tool schema: web search and extraction, not shell, filesystem, messaging, code execution, or task-board tools. The child still runs as the parent's operating-system identity in a separate process, with the parent environment minus session and kanban identifiers (and available gateway-specific context variables); its home and profile variables are set for the quarantine. This is not operating-system isolation.
 
 ## 1. Create the quarantine profile first
 

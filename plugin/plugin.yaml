@@ -3,7 +3,11 @@ label: Hermes Web Research
 kind: standalone
 version: 1.0.0
 description: >
-  Delegates web research to a quarantined profile. Registers one tool,
-  `web_research(question)`, that runs in a separate OS process and forwards only
-  a bounded, source-cited, labelled JSON answer.
+  Delegates web research to a profile configured with a web-only tool schema.
+  Registers one tool, `web_research(question)`, that runs in a separate process
+  as the parent's operating-system identity (not operating-system isolation),
+  inherits the parent environment minus session and kanban identifiers
+  (and available gateway context variables), with home/profile set for the
+  quarantine, and forwards a
+  bounded, source-cited, labelled answer.
 author: ghosty-11

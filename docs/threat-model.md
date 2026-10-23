@@ -1,8 +1,8 @@
 # Threat model
 
-Protect the privileged profile's conversation state, local system access, and task authority from web-origin injection; protect the integrity of the `web_research` result envelope; and contain the quarantine profile so that its compromise is limited to its own tool surface.
+Protect the privileged profile's conversation state and tool authority from web-origin injection; protect the integrity of the `web_research` result envelope; and limit the tools exposed to the quarantine model through its configured web-only schema. The separate child process does not restrict its operating-system access.
 
-Controls: single typed JSON handoff with fail-closed parse, envelope marker redaction and value flattening, URL scheme allowlist, identity-based recursion block, resource bounds, and child-process spawn isolation with environment scrubbing.
+Controls: single typed JSON handoff with fail-closed parse, envelope marker redaction and value flattening, URL scheme allowlist, identity-based recursion block, resource bounds, and a separate child process with limited environment scrubbing. A separate process is not operating-system isolation.
 
 ## Assets
 
@@ -25,13 +25,13 @@ A web page, search result, or extracted document that wants its content to reach
 
 1. **Privileged seat** — holds sensitive tools and conversation context.
 2. **Plugin running inside the privileged seat** — decides when and how to delegate.
-3. **Child OS process** — runs the Hermes one-shot for the quarantine seat.
-4. **Quarantine seat** — holds only web research tools in the intended deployment.
+3. **Child process** — runs the Hermes one-shot as the same operating-system identity as the privileged seat.
+4. **Quarantine seat** — has a web-only tool schema in the intended deployment; the plugin does not enforce that schema.
 5. **The web** — untrusted source of pages and search results.
 
 ## Controls and their limits
 
-- **Single typed JSON handoff with fail-closed parse.** The child must return one JSON object with the expected fields. Anything else — prose, truncated JSON, an HTML page, an empty response, a JSON array, timeout, or spawn failure — causes the plugin to return an error and forward nothing.
+- **Single typed JSON handoff with fail-closed parse.** The child must exit successfully and return one JSON object with the expected fields. Anything else — nonzero exit, prose, truncated JSON, an HTML page, an empty response, a JSON array, timeout, or spawn failure — causes the plugin to return an error and forward nothing.
   - What it cannot do: it does not validate truth, intent, or absence of prompt injection inside the answer. It also cannot prevent the quarantine model from leaking its own credentials if it is induced to do so.
 - **Envelope marker redaction and value flattening.** Forwarded values are reduced to one line, control characters are replaced with spaces, and the envelope's own markers (`UNTRUSTED WEB CONTENT`, `ANSWER:`, `CAVEATS:`, `SOURCES:`, `OPERATOR:`) are redacted out of the values.
   - What it cannot do: it cannot stop a page from writing persuasive or misleading words; it only stops those words from reintroducing the envelope's own framing or adding lines to it.
@@ -41,8 +41,8 @@ A web page, search result, or extracted document that wants its content to reach
   - What it cannot do: it cannot prevent the operator from pointing a different tool or plugin at the same quarantine seat, nor can it enforce what tools the quarantine profile actually exposes.
 - **Resource bounds.** The plugin reads stdout and stderr incrementally as raw bytes and enforces `max_stdout_bytes` per stream. A cooperative monotonic deadline covers child receive and the bounded cleanup grace; parsing and formatting each check the same deadline, and parsing is one decode over at most the byte cap. Overflow or timeout kills and reaps the child; refusals never forward truncated JSON. This bounds normal and adversarial work but does not preempt CPU already spent inside a single parser call.
   - What it cannot do: it cannot prevent the privileged model from including sensitive data in the question text, because the question crosses the boundary intentionally.
-- **Spawn isolation and environment scrubbing.** The child runs under the quarantine home directory; parent session and task identifiers are removed from its environment.
-  - What it cannot do: it cannot prevent the quarantine profile from being over-provisioned at the seat level. If the quarantine holds filesystem, shell, messaging, or code-execution tools, the isolation boundary does not remove them.
+- **Separate process and environment scrubbing.** The child runs under the quarantine home directory with the same operating-system identity as the parent. It inherits the parent's environment except session and kanban identifiers (and available gateway-specific context variables); its home and profile variables are set for the quarantine.
+  - What it cannot do: this is not operating-system isolation. The child can retain inherited credentials and access files permitted to the parent identity. The web-only tool schema limits model-exposed tools only when the quarantine seat is configured that way; it does not remove operating-system permissions or tools granted to that seat.
 
 ## Fail-closed property
 
@@ -58,7 +58,7 @@ The predecessor compared `HERMES_PROFILE` to the quarantine name. That variable 
 
 ## Residual risk
 
-The quarantine profile's own credentials and tools are what an injection gets. A quarantine that holds more than web tools is a hole. The plugin trusts the framework to spawn the named seat correctly and trusts the operator to have configured that seat with a narrow tool surface. It also trusts that the privileged model treats the labelled result as data, not instruction.
+The child shares the parent's operating-system identity and inherits most of its environment, including any credentials not removed by identifier scrubbing. The quarantine profile's own credentials and model-exposed tools remain exposed to injection. A quarantine that holds more than web tools is a hole. The plugin trusts the framework to spawn the named seat correctly and trusts the operator to have configured that seat with a narrow tool surface. It also trusts that the privileged model treats the labelled result as data, not instruction.
 
 ## Explicitly out of scope
 

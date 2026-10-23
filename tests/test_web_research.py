@@ -107,6 +107,13 @@ class WebResearchTestCase(unittest.TestCase):
         out = self.answer(self.payload(answer="", sources=[{"url": "https://x.example"}]))
         self.assertNotIn("x.example", out)
         self.assertIn("error", out.lower())
+    def test_nonzero_child_exit_refuses_valid_answer(self):
+        out = self.answer(self.payload(answer="CANARY_FAILED_CHILD"), rc=17)
+        self.assertTrue(out.startswith("web_research error:"))
+        self.assertIn("17", out)
+        self.assertTrue(out.endswith("Nothing was forwarded."))
+        self.assertNotIn("CANARY_FAILED_CHILD", out)
+
     def test_timeout_forwards_nothing(self):
         self.plugin._run_quarantine = lambda *a, **k: (b"", b"", -9, "timeout")
         out = self.plugin._handle({"question": "q"})
@@ -221,7 +228,7 @@ class WebResearchTestCase(unittest.TestCase):
         self.assertTrue(self.plugin._available())
 
     # ---- the child is spawned correctly -----------------------------------
-    def test_child_runs_as_the_quarantine_and_not_as_its_parent(self):
+    def test_child_environment_scrubs_session_identifiers_but_inherits_other_values(self):
         seen = {}
 
         def _capture(cmd, env, cwd, timeout, limit, deadline, **kwargs):
@@ -231,11 +238,13 @@ class WebResearchTestCase(unittest.TestCase):
         self.plugin._run_quarantine = _capture
         os.environ["HERMES_KANBAN_TASK"] = "leak-me"
         os.environ["HERMES_SESSION_ID"] = "leak-me-too"
+        os.environ["WEB_RESEARCH_TEST_CANARY"] = "inherited-value"
         self.plugin._handle({"question": "q"})
 
         self.assertEqual(seen["env"].get("HERMES_HOME"), self.home)
         self.assertNotIn("HERMES_KANBAN_TASK", seen["env"])
         self.assertNotIn("HERMES_SESSION_ID", seen["env"])
+        self.assertEqual(seen["env"]["WEB_RESEARCH_TEST_CANARY"], "inherited-value")
 
     def test_framework_interpreter_is_the_running_one_by_default(self):
         """Derivation, asserted as behaviour rather than by reading the source."""

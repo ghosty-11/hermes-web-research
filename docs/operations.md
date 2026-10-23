@@ -25,7 +25,7 @@ All settings live under the `web_research:` block in the Hermes profile config.
 - `max_sources` bounds how many URLs can be injected into the context. Raising it widens the same channel.
 - `max_stdout_bytes` is enforced incrementally on raw bytes for both stdout and stderr. Exact-boundary output is accepted; the first byte beyond the limit refuses the call. A zero limit allows no child output. The child is killed and reaped on overflow or timeout, so no truncated JSON is treated as success.
 - `python` and `entrypoint` override the derived framework paths. Use them only when the running interpreter or the Hermes CLI is not where the quarantine should run.
-- `workdir` changes the child's filesystem context. It has no effect on what the quarantine can reach, because the boundary is the tool schema, not the directory.
+- `workdir` changes the child's working directory, not its access to files. The child runs as the same operating-system identity as the parent in a separate process with a configured web-only tool schema, not operating-system isolation. It inherits the parent's environment except session and kanban identifiers (and available gateway-specific context variables); its home and profile variables are set for the quarantine.
 
 ## Latency
 
@@ -33,7 +33,7 @@ Each call costs one full agent turn in the quarantine profile: the model must re
 
 ## Reading a refusal
 
-Every refusal begins with `web_research error:` and ends with a statement that nothing was fetched or forwarded. That is the intended outcome, not an error to work around. If the quarantine returns prose, HTML, truncated JSON, a fenced code block, or an array instead of an object, the boundary is doing exactly what it is for: it is refusing to forward raw web text into the privileged context.
+Every refusal begins with `web_research error:` and states that nothing was fetched or forwarded. That is the intended outcome, not an error to work around. A nonzero child exit refuses even valid JSON; prose, HTML, truncated JSON, a fenced code block, or an array instead of an object also refuses rather than forwarding raw web text into the privileged context.
 
 Do not bypass a refusal by asking the model to "just show me what it said". The unparsed output is on the quarantine side of the boundary for a reason.
 
@@ -43,7 +43,7 @@ Do not bypass a refusal by asking the model to "just show me what it said". The 
 2. **Quarantine seat lacks web tools.** A profile can exist and still not expose `web_search` or `web_extract` at runtime. Verify with a direct one-shot query against the quarantine profile.
 3. **Entrypoint not found.** If `python` or `entrypoint` is configured, verify the paths exist and are executable. If they are empty, verify the running process can import `hermes_cli` and resolve the CLI entrypoint beside it.
 4. **Timeout.** A query that requires many searches may exceed `timeout_seconds`. Narrow the question or raise the timeout.
-5. **Child output not JSON.** The quarantine may be emitting prose or markdown fences. Inspect its one-shot output directly and adjust its instructions or toolset.
+5. **Child exits nonzero or returns non-JSON.** Check the quarantine profile's logs for a failed one-shot; if the child succeeds but emits prose or markdown fences, inspect its one-shot output directly and adjust its instructions or toolset.
 
 ## Misuse warning: do not widen the boundary for convenience
 

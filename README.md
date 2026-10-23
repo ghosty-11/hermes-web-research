@@ -2,7 +2,7 @@
 
 [![Support this work](https://img.shields.io/badge/Support-EVM-6f42c1?logo=ethereum&logoColor=white)](#support-development)
 
-`hermes-web-research` is a Hermes Agent plugin that gives a privileged profile web access without web tools. A composite toolset typically hands one profile `web_search` and `web_extract` alongside `terminal`, `write_file`, and `execute_code`: that is untrusted input, sensitive systems, and external state change on a single surface. Removing the web tools closes the gap, but removing a capability the operator wants is not a fix. This plugin moves the capability instead: it registers one tool on the privileged profile that delegates to a separate quarantine profile, running in its own OS process, whose tool surface is web research only.
+`hermes-web-research` is a Hermes Agent plugin that gives a privileged profile web access without web tools. A composite toolset typically hands one profile `web_search` and `web_extract` alongside `terminal`, `write_file`, and `execute_code`: that is untrusted input, sensitive systems, and external state change on a single surface. Removing the web tools closes the gap, but removing a capability the operator wants is not a fix. This plugin delegates to a quarantine profile configured with a web-only tool schema. Its child runs in a separate process as the same operating-system identity, with the parent environment minus session and kanban identifiers (and available gateway-specific context variables); its home and profile variables are set for the quarantine. This is not operating-system isolation.
 
 ## Status
 
@@ -29,13 +29,13 @@ Configuration lives under a `web_research:` block. Recognised keys mirror the pl
 
 The plugin is a delegation boundary, not a content filter.
 
-Three verified properties:
+Boundary properties:
 
-1. **Fail-closed.** If the child's stdout does not parse as a JSON object, output exceeds the per-stream byte limit, or the child times out, nothing is forwarded — not a snippet, not a truncated fragment. The same holds for spawn failure, an empty answer, and a JSON array instead of an object.
+1. **Fail-closed.** If the child exits nonzero, its stdout does not parse as a JSON object, output exceeds the per-stream byte limit, or the child times out, nothing is forwarded — not a snippet, not a truncated fragment. The same holds for spawn failure, an empty answer, and a JSON array instead of an object.
 2. **The envelope cannot be impersonated.** Forwarded values are flattened to one line (control characters become spaces) and the envelope's own markers — `UNTRUSTED WEB CONTENT`, `ANSWER:`, `CAVEATS:`, `SOURCES:`, `OPERATOR:` — are redacted out of them, so a value cannot wear the framing. Sources must be `http://` or `https://`.
 3. **Recursion is blocked by identity, not by an environment variable.** The seat is resolved from the Hermes home path via `get_active_profile_name()`. A guard keyed on `HERMES_PROFILE` could not fire because the gateway never sets it; this implementation returns false when the active seat is the quarantine, verified live on that seat.
 
-Honest limit: this bounds, structures, and labels attacker-influenced text; it does **not** sanitise it. A determined injection can still put chosen words in front of the privileged model — it just cannot put them there with a shell attached, at unbounded length, spread over lines it chose, or wearing the envelope's own vocabulary. Content-level screening is a separate layer.
+Honest limit: this bounds, structures, and labels attacker-influenced text; it does **not** sanitise it or restrict the child at the operating-system level. A determined injection can still put chosen words in front of the privileged model, and the child retains the parent's operating-system permissions and most environment variables. The web-only tool schema narrows model-exposed tools only when configured and verified on the quarantine seat. Content-level screening is a separate layer.
 
 The implementation uses incremental per-stream byte bounds, a single bounded JSON decode, and a cooperative monotonic deadline with finite child cleanup. The deadline does not preempt CPU inside one parser call.
 
